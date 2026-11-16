@@ -1784,6 +1784,9 @@ function inlineHtml(src, refs, out) {
 // ---------------------------------------------------------------------------
 
 /** [columns, string index] of the leading spaces/tabs of a line. */
+/** Reused out-array for measureIndent: every caller destructures the
+ *  two numbers immediately, so sharing one array is safe. */
+const miOut = [0, 0];
 function measureIndent(line) {
   let cols = 0;
   let idx = 0;
@@ -1793,7 +1796,9 @@ function measureIndent(line) {
     else if (c === '\t') { cols += 4 - (cols % 4); idx++; }
     else break;
   }
-  return [cols, idx];
+  miOut[0] = cols;
+  miOut[1] = idx;
+  return miOut;
 }
 
 function isBlankLine(line) {
@@ -2560,7 +2565,33 @@ function parseList(lines, i, firstMk, refs) {
       break;
     }
     while (itemLines.length > 0 && itemLines[itemLines.length - 1] === '') itemLines.pop();
-    const parsed = parseBlocks(itemLines, 0, itemLines.length, refs, false, false, true);
+    // Fast path: an item whose lines are all plain paragraph
+    // continuations is a single paragraph — no need to run the whole
+    // block parser on it. A line qualifies when it is not blank, is
+    // indented less than 4, and starts with a letter or a character
+    // that cannot open a block (* - _ + digit # ` < > [ | : = and a
+    // blank line all disqualify, conservatively).
+    let simpleBlocks = null;
+    if (itemLines.length > 0) {
+      let simple = true;
+      for (let q = 0; q < itemLines.length; q++) {
+        const ln = itemLines[q];
+        if (isBlankLine(ln)) { simple = false; break; }
+        const [indq, idxq] = measureIndent(ln);
+        if (indq >= 4) { simple = false; break; }
+        const fcq = ln.charCodeAt(idxq);
+        const ok = (fcq >= 65 && fcq <= 90) || (fcq >= 97 && fcq <= 122) ||
+          fcq === 40 || fcq === 41 || fcq === 34 || fcq === 39 || fcq === 46 ||
+          fcq === 44 || fcq === 59 || fcq === 63 || fcq === 33 || fcq === 36 ||
+          fcq === 37 || fcq === 94 || fcq === 38 || fcq === 123 || fcq === 125 ||
+          fcq === 47 || fcq === 92;
+        if (!ok) { simple = false; break; }
+      }
+      if (simple) simpleBlocks = [{ t: 'p', lines: itemLines, bb: false }];
+    }
+    const parsed = simpleBlocks
+      ? { blocks: simpleBlocks, loose: false }
+      : parseBlocks(itemLines, 0, itemLines.length, refs, false, false, true);
     if (parsed.loose) loose = true;
     items.push({ blocks: parsed.blocks, task });
     if (j >= lines.length || !endedByNewItem) break;
